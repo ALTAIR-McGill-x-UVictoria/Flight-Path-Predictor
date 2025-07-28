@@ -7,7 +7,7 @@ from datetime import datetime
 # telemetry data location
 folder = "telemetry_logs/"
 # path = "flight_log_2025-07-03_22-10-39.txt"
-path = "flight_log_2025-07-23_23-12-23.txt"
+path = "flight_log_2025-07-23_21-41-08.txt"
 
 def parse_fc_telemetry(log_file_path):
     """

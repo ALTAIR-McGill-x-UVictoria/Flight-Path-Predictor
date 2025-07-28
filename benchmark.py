@@ -59,7 +59,7 @@ def load_csv():
 
     # Define the CSV file paths
     csv_file1 = os.path.join(data_folder, 'flight_log_2025-07-03_22-10-39_parsed.csv')
-    csv_file2 = os.path.join(data_folder, 'flight_log_2025-07-23_23-12-23_parsed.csv')
+    csv_file2 = os.path.join(data_folder, 'flight_log_2025-07-23_21-41-08_parsed.csv')
 
     # Read the CSV files into pandas DataFrames
     try:
@@ -114,7 +114,8 @@ def benchmark_predictor(predictor_func, predictor_name, df, n_points, key_column
         'distances': [],
         'lat_errors': [],
         'lon_errors': [],
-        'alt_errors': []
+        'alt_errors': [],
+        'altitudes': []  # Track actual altitudes for apogee detection
     }
     
     # Filter out rows with missing GPS data
@@ -172,6 +173,7 @@ def benchmark_predictor(predictor_func, predictor_name, df, n_points, key_column
             results['lat_errors'].append(lat_error)
             results['lon_errors'].append(lon_error)
             results['alt_errors'].append(alt_error)
+            results['altitudes'].append(actual_alt)  # Track altitude for apogee detection
             
             successful_predictions += 1
             
@@ -443,13 +445,51 @@ def plot_accuracy_comparison(all_results, save_plots=True):
             yorgo_lon_errors.extend(yorgo_res['lon_errors'])
             yorgo_alt_errors.extend(yorgo_res['alt_errors'])
     
+    # Apply outlier filtering for better visualization
+    def filter_outliers(data, percentile=95):
+        """Filter outliers above the specified percentile"""
+        if not data:
+            return data
+        threshold = np.percentile(data, percentile)
+        return [x for x in data if x <= threshold]
+    
+    # Filter outliers for distance plots
+    ben_distances_filtered = filter_outliers(ben_distances)
+    yorgo_distances_filtered = filter_outliers(yorgo_distances)
+    
+    # Calculate outlier counts for reporting
+    ben_outliers = len(ben_distances) - len(ben_distances_filtered)
+    yorgo_outliers = len(yorgo_distances) - len(yorgo_distances_filtered)
+    
     # Plot 1: Distance Error Distribution (Box Plot)
     ax1 = axes[0, 0]
-    if ben_distances and yorgo_distances:
-        distance_data = [ben_distances, yorgo_distances]
+    if ben_distances_filtered and yorgo_distances_filtered:
+        distance_data = [ben_distances_filtered, yorgo_distances_filtered]
         box_plot = ax1.boxplot(distance_data, tick_labels=['Ben', 'Yorgo'], patch_artist=True)
         box_plot['boxes'][0].set_facecolor('lightblue')
         box_plot['boxes'][1].set_facecolor('lightcoral')
+        # Add outlier information
+        total_outliers = ben_outliers + yorgo_outliers
+        if total_outliers > 0:
+            ax1.text(0.02, 0.98, f'{total_outliers} outliers hidden', 
+                    transform=ax1.transAxes, verticalalignment='top',
+                    bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+    elif ben_distances_filtered:
+        # Only Ben has data
+        box_plot = ax1.boxplot([ben_distances_filtered], tick_labels=['Ben'], patch_artist=True)
+        box_plot['boxes'][0].set_facecolor('lightblue')
+        if ben_outliers > 0:
+            ax1.text(0.02, 0.98, f'{ben_outliers} outliers hidden', 
+                    transform=ax1.transAxes, verticalalignment='top',
+                    bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+    elif yorgo_distances_filtered:
+        # Only Yorgo has data
+        box_plot = ax1.boxplot([yorgo_distances_filtered], tick_labels=['Yorgo'], patch_artist=True)
+        box_plot['boxes'][0].set_facecolor('lightcoral')
+        if yorgo_outliers > 0:
+            ax1.text(0.02, 0.98, f'{yorgo_outliers} outliers hidden', 
+                    transform=ax1.transAxes, verticalalignment='top',
+                    bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
     else:
         ax1.text(0.5, 0.5, 'No successful predictions\nto display', ha='center', va='center', transform=ax1.transAxes)
     ax1.set_title('3D Distance Error Distribution')
@@ -458,9 +498,23 @@ def plot_accuracy_comparison(all_results, save_plots=True):
     
     # Plot 2: Distance Error Histogram
     ax2 = axes[0, 1]
-    if ben_distances and yorgo_distances:
-        ax2.hist(ben_distances, bins=30, alpha=0.7, label='Ben', color='lightblue', density=True)
-        ax2.hist(yorgo_distances, bins=30, alpha=0.7, label='Yorgo', color='lightcoral', density=True)
+    if ben_distances_filtered and yorgo_distances_filtered:
+        ax2.hist(ben_distances_filtered, bins=30, alpha=0.7, label='Ben', color='lightblue', density=True)
+        ax2.hist(yorgo_distances_filtered, bins=30, alpha=0.7, label='Yorgo', color='lightcoral', density=True)
+        ax2.set_title('Distance Error Distribution')
+        ax2.set_xlabel('Distance Error (meters)')
+        ax2.set_ylabel('Density')
+        ax2.legend()
+        ax2.grid(True, alpha=0.3)
+    elif ben_distances_filtered:
+        ax2.hist(ben_distances_filtered, bins=30, alpha=0.7, label='Ben', color='lightblue', density=True)
+        ax2.set_title('Distance Error Distribution')
+        ax2.set_xlabel('Distance Error (meters)')
+        ax2.set_ylabel('Density')
+        ax2.legend()
+        ax2.grid(True, alpha=0.3)
+    elif yorgo_distances_filtered:
+        ax2.hist(yorgo_distances_filtered, bins=30, alpha=0.7, label='Yorgo', color='lightcoral', density=True)
         ax2.set_title('Distance Error Distribution')
         ax2.set_xlabel('Distance Error (meters)')
         ax2.set_ylabel('Density')
@@ -547,6 +601,29 @@ def plot_accuracy_comparison(all_results, save_plots=True):
     
     plt.show()
 
+def detect_apogee(altitudes):
+    """
+    Detect the apogee (maximum altitude) point in a flight
+    
+    Args:
+        altitudes: List of altitude values
+    
+    Returns:
+        int: Index of the apogee point, or -1 if no valid apogee found
+    """
+    if not altitudes or len(altitudes) < 3:
+        return -1
+    
+    # Find the maximum altitude point
+    max_alt = max(altitudes)
+    apogee_candidates = [i for i, alt in enumerate(altitudes) if alt == max_alt]
+    
+    # If there are multiple points with max altitude, take the middle one
+    if apogee_candidates:
+        return apogee_candidates[len(apogee_candidates) // 2]
+    
+    return -1
+
 def plot_error_trends(all_results, save_plots=True):
     """
     Create plots showing error trends over time for each dataset
@@ -559,45 +636,199 @@ def plot_error_trends(all_results, save_plots=True):
         print("Matplotlib not available. Skipping error trend plots.")
         return
         
+    # Load original CSV data to detect actual flight apogee
+    df1, df2 = load_csv()
+    csv_datasets = {
+        'flight_log_2025-07-03': df1,
+        'flight_log_2025-07-23': df2
+    }
+        
     n_datasets = len(all_results)
     fig, axes = plt.subplots(n_datasets, 2, figsize=(15, 6 * n_datasets))
     if n_datasets == 1:
         axes = axes.reshape(1, -1)
     
-    fig.suptitle('Error Trends Over Flight Time', fontsize=16, fontweight='bold')
+    fig.suptitle('Error Trends Over Flight Time (with Flight Apogee Markers)', fontsize=16, fontweight='bold')
     
     for idx, (dataset_name, results) in enumerate(all_results.items()):
         ben_res = results.get('ben')
         yorgo_res = results.get('yorgo')
         
+        # Collect all distance data for outlier analysis
+        all_distances = []
+        if ben_res and ben_res['distances']:
+            all_distances.extend(ben_res['distances'])
+        if yorgo_res and yorgo_res['distances']:
+            all_distances.extend(yorgo_res['distances'])
+        
+        # Calculate outlier threshold (95th percentile or 3 standard deviations)
+        if all_distances:
+            q95 = np.percentile(all_distances, 95)
+            mean_dist = np.mean(all_distances)
+            std_dist = np.std(all_distances)
+            outlier_threshold = min(q95, mean_dist + 3 * std_dist)
+            # Set a reasonable maximum threshold (e.g., 500 meters for typical flight prediction)
+            outlier_threshold = min(outlier_threshold, 500)
+        else:
+            outlier_threshold = 100  # Default threshold
+        
         # Plot distance errors over time
         ax1 = axes[idx, 0]
         has_data = False
+        outlier_count = 0
         
         # Plot Ben's results if available
         if ben_res and ben_res['distances']:
-            x_ben = range(len(ben_res['distances']))
-            ax1.plot(x_ben, ben_res['distances'], 'b-', alpha=0.7, label='Ben', linewidth=1)
+            ben_distances = np.array(ben_res['distances'])
+            x_ben = range(len(ben_distances))
             
-            # Add moving average for Ben
-            if len(ben_res['distances']) > 10:
-                ben_ma = np.convolve(ben_res['distances'], np.ones(10)/10, mode='valid')
-                ax1.plot(range(9, len(ben_res['distances'])), ben_ma, 'b-', linewidth=2, alpha=0.8)
+            # Identify outliers
+            ben_outliers = ben_distances > outlier_threshold
+            outlier_count += np.sum(ben_outliers)
+            
+            # Plot normal points
+            ben_normal = ben_distances.copy()
+            ben_normal[ben_outliers] = np.nan  # Hide outliers
+            ax1.plot(x_ben, ben_normal, 'b-', alpha=0.7, label='Ben', linewidth=1)
+            
+            # Plot outliers as red dots
+            if np.any(ben_outliers):
+                ax1.scatter(np.where(ben_outliers)[0], ben_distances[ben_outliers], 
+                           color='red', marker='o', s=20, alpha=0.7, zorder=5)
+            
+            # Add moving average for Ben (excluding outliers)
+            if len(ben_distances) > 10:
+                ben_ma_data = ben_normal[~np.isnan(ben_normal)]
+                if len(ben_ma_data) > 10:
+                    # Create moving average with NaN handling
+                    ben_smooth = []
+                    for i in range(len(ben_distances)):
+                        window_start = max(0, i-5)
+                        window_end = min(len(ben_distances), i+6)
+                        window_data = ben_normal[window_start:window_end]
+                        window_clean = window_data[~np.isnan(window_data)]
+                        if len(window_clean) > 0:
+                            ben_smooth.append(np.mean(window_clean))
+                        else:
+                            ben_smooth.append(np.nan)
+                    ax1.plot(x_ben, ben_smooth, 'b-', linewidth=2, alpha=0.8)
             has_data = True
         
         # Plot Yorgo's results if available
         if yorgo_res and yorgo_res['distances']:
-            x_yorgo = range(len(yorgo_res['distances']))
-            ax1.plot(x_yorgo, yorgo_res['distances'], 'r-', alpha=0.7, label='Yorgo', linewidth=1)
+            yorgo_distances = np.array(yorgo_res['distances'])
+            x_yorgo = range(len(yorgo_distances))
             
-            # Add moving average for Yorgo
-            if len(yorgo_res['distances']) > 10:
-                yorgo_ma = np.convolve(yorgo_res['distances'], np.ones(10)/10, mode='valid')
-                ax1.plot(range(9, len(yorgo_res['distances'])), yorgo_ma, 'r-', linewidth=2, alpha=0.8)
+            # Identify outliers
+            yorgo_outliers = yorgo_distances > outlier_threshold
+            outlier_count += np.sum(yorgo_outliers)
+            
+            # Plot normal points
+            yorgo_normal = yorgo_distances.copy()
+            yorgo_normal[yorgo_outliers] = np.nan  # Hide outliers
+            ax1.plot(x_yorgo, yorgo_normal, 'r-', alpha=0.7, label='Yorgo', linewidth=1)
+            
+            # Plot outliers as red dots
+            if np.any(yorgo_outliers):
+                ax1.scatter(np.where(yorgo_outliers)[0], yorgo_distances[yorgo_outliers], 
+                           color='red', marker='o', s=20, alpha=0.7, zorder=5)
+            
+            # Add moving average for Yorgo (excluding outliers)
+            if len(yorgo_distances) > 10:
+                yorgo_ma_data = yorgo_normal[~np.isnan(yorgo_normal)]
+                if len(yorgo_ma_data) > 10:
+                    # Create moving average with NaN handling
+                    yorgo_smooth = []
+                    for i in range(len(yorgo_distances)):
+                        window_start = max(0, i-5)
+                        window_end = min(len(yorgo_distances), i+6)
+                        window_data = yorgo_normal[window_start:window_end]
+                        window_clean = window_data[~np.isnan(window_data)]
+                        if len(window_clean) > 0:
+                            yorgo_smooth.append(np.mean(window_clean))
+                        else:
+                            yorgo_smooth.append(np.nan)
+                    ax1.plot(x_yorgo, yorgo_smooth, 'r-', linewidth=2, alpha=0.8)
             has_data = True
+        
+        # Add apogee markers for original CSV flight data
+        if dataset_name in csv_datasets and csv_datasets[dataset_name] is not None:
+            df = csv_datasets[dataset_name]
+            # Clean the data and get altitudes
+            key_columns = ['gps_lat', 'gps_lon', 'gps_alt']
+            df_clean = df.dropna(subset=key_columns)
+            
+            if len(df_clean) > 0:
+                # Get altitude data from the original CSV
+                csv_altitudes = df_clean['gps_alt'].tolist()
+                csv_apogee_idx = detect_apogee(csv_altitudes)
+                
+                if csv_apogee_idx >= 0:
+                    # Since predictions start from n_points index, we need to adjust
+                    # the apogee index to match the prediction timeline
+                    n_points = 5  # Default value used in benchmark
+                    if csv_apogee_idx >= n_points:
+                        adjusted_apogee_idx = csv_apogee_idx - n_points
+                        max_alt = csv_altitudes[csv_apogee_idx]
+                        
+                        # Only show marker if it's within the prediction range
+                        max_predictions = 0
+                        if ben_res and ben_res['distances']:
+                            max_predictions = max(max_predictions, len(ben_res['distances']))
+                        if yorgo_res and yorgo_res['distances']:
+                            max_predictions = max(max_predictions, len(yorgo_res['distances']))
+                        
+                        if adjusted_apogee_idx < max_predictions:
+                            # Add vertical line for flight apogee
+                            ax1.axvline(x=adjusted_apogee_idx, color='green', linestyle=':', 
+                                       alpha=0.8, linewidth=3, label=f'Flight Apogee ({max_alt:.0f}m)')
+                            
+                            # Add annotation for flight apogee
+                            y_annotation = outlier_threshold * 0.7
+                            ax1.annotate(f'Flight Apogee\n{max_alt:.0f}m', 
+                                        xy=(adjusted_apogee_idx, y_annotation), 
+                                        xytext=(adjusted_apogee_idx + max_predictions * 0.03, y_annotation * 1.2),
+                                        arrowprops=dict(arrowstyle='->', color='green', alpha=0.8),
+                                        fontsize=10, color='green', ha='left', fontweight='bold',
+                                        bbox=dict(boxstyle='round,pad=0.3', facecolor='lightgreen', alpha=0.7))
+        
+        # Mark apogee (maximum altitude) points for predictor results
+        if ben_res and ben_res.get('altitudes'):
+            apogee_idx = detect_apogee(ben_res['altitudes'])
+            if apogee_idx >= 0 and apogee_idx < len(ben_res['distances']):
+                # Check if the apogee point has valid distance data (not filtered as outlier)
+                if ben_res['distances'][apogee_idx] <= outlier_threshold:
+                    ax1.axvline(x=apogee_idx, color='blue', linestyle='--', alpha=0.6, linewidth=2, 
+                               label='Ben Prediction Apogee')
+                    # Add annotation
+                    y_pos = ben_res['distances'][apogee_idx] if ben_res['distances'][apogee_idx] <= outlier_threshold else outlier_threshold * 0.5
+                    ax1.annotate(f'Ben Pred.\nApogee\n({ben_res["altitudes"][apogee_idx]:.0f}m)', 
+                                xy=(apogee_idx, y_pos), xytext=(apogee_idx + len(ben_res['distances']) * 0.05, y_pos * 0.8),
+                                arrowprops=dict(arrowstyle='->', color='blue', alpha=0.6),
+                                fontsize=8, color='blue', ha='left')
+        
+        if yorgo_res and yorgo_res.get('altitudes'):
+            apogee_idx = detect_apogee(yorgo_res['altitudes'])
+            if apogee_idx >= 0 and apogee_idx < len(yorgo_res['distances']):
+                # Check if the apogee point has valid distance data (not filtered as outlier)
+                if yorgo_res['distances'][apogee_idx] <= outlier_threshold:
+                    ax1.axvline(x=apogee_idx, color='red', linestyle='--', alpha=0.6, linewidth=2, 
+                               label='Yorgo Prediction Apogee')
+                    # Add annotation
+                    y_pos = yorgo_res['distances'][apogee_idx] if yorgo_res['distances'][apogee_idx] <= outlier_threshold else outlier_threshold * 0.4
+                    ax1.annotate(f'Yorgo Pred.\nApogee\n({yorgo_res["altitudes"][apogee_idx]:.0f}m)', 
+                                xy=(apogee_idx, y_pos), xytext=(apogee_idx + len(yorgo_res['distances']) * 0.05, y_pos * 0.8),
+                                arrowprops=dict(arrowstyle='->', color='red', alpha=0.6),
+                                fontsize=8, color='red', ha='left')
         
         if has_data:
             ax1.legend()
+            # Set reasonable y-axis limits
+            ax1.set_ylim(0, outlier_threshold * 1.1)
+            if outlier_count > 0:
+                ax1.text(0.02, 0.98, f'Note: {outlier_count} outliers > {outlier_threshold:.0f}m hidden', 
+                        transform=ax1.transAxes, verticalalignment='top', 
+                        bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
         else:
             ax1.text(0.5, 0.5, 'No successful predictions\nto display', ha='center', va='center', transform=ax1.transAxes)
         
