@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 import os
+import sys
 from math import radians, cos, sin, asin, sqrt
 from Ben_predictor.ben_predictor import predict_next_point as ben_predictor
 from Yorgo_predictor.yorgo_predictor import predict_next_point as yorgo_predictor
@@ -202,13 +203,14 @@ def benchmark_predictor(predictor_func, predictor_name, df, n_points, key_column
     
     return results
 
-def run_benchmark(n_points=5, datasets=None):
+def run_benchmark(n_points=5, datasets=None, predictors=None):
     """
     Run benchmark comparison between Ben and Yorgo predictors
     
     Args:
         n_points: Number of previous points to use for prediction
         datasets: List of dataset names to test on, or None for all
+        predictors: List of predictor names to test ('ben', 'yorgo'), or None for all
     
     Returns:
         dict: Complete benchmark results
@@ -234,6 +236,10 @@ def run_benchmark(n_points=5, datasets=None):
     if datasets:
         datasets_dict = {k: v for k, v in datasets_dict.items() if k in datasets}
     
+    # Set default predictors if none specified
+    if predictors is None:
+        predictors = ['ben', 'yorgo']
+    
     all_results = {}
     
     # Test each dataset
@@ -241,21 +247,26 @@ def run_benchmark(n_points=5, datasets=None):
         print(f"\nTesting on dataset: {dataset_name}")
         print("-" * 40)
         
-        # Test Ben's predictor
-        print(f"Testing Ben's predictor...")
-        ben_results = benchmark_predictor(ben_predictor, "Ben", df, n_points)
+        dataset_results = {}
         
-        # Test Yorgo's predictor
-        print(f"Testing Yorgo's predictor...")
-        yorgo_results = benchmark_predictor(yorgo_predictor, "Yorgo", df, n_points)
+        # Test Ben's predictor if requested
+        if 'ben' in predictors:
+            print(f"Testing Ben's predictor...")
+            ben_results = benchmark_predictor(ben_predictor, "Ben", df, n_points)
+            dataset_results['ben'] = ben_results
         
-        all_results[dataset_name] = {
-            'ben': ben_results,
-            'yorgo': yorgo_results
-        }
+        # Test Yorgo's predictor if requested
+        if 'yorgo' in predictors:
+            print(f"Testing Yorgo's predictor...")
+            yorgo_results = benchmark_predictor(yorgo_predictor, "Yorgo", df, n_points)
+            dataset_results['yorgo'] = yorgo_results
+        
+        all_results[dataset_name] = dataset_results
         
         # Print results for this dataset
-        print_dataset_results(ben_results, yorgo_results, dataset_name)
+        ben_res = dataset_results.get('ben')
+        yorgo_res = dataset_results.get('yorgo')
+        print_dataset_results(ben_res, yorgo_res, dataset_name)
     
     # Print overall comparison
     print_overall_comparison(all_results)
@@ -281,7 +292,11 @@ def print_dataset_results(ben_results, yorgo_results, dataset_name):
     print(f"\nResults for {dataset_name}:")
     print("=" * 50)
     
-    predictors = [("Ben", ben_results), ("Yorgo", yorgo_results)]
+    predictors = []
+    if ben_results is not None:
+        predictors.append(("Ben", ben_results))
+    if yorgo_results is not None:
+        predictors.append(("Yorgo", yorgo_results))
     
     for name, results in predictors:
         print(f"\n{name}'s Predictor:")
@@ -313,24 +328,33 @@ def print_overall_comparison(all_results):
     yorgo_total_attempts = 0
     yorgo_all_distances = []
     
+    # Check which predictors we have results for
+    has_ben = False
+    has_yorgo = False
+    
     for dataset_name, results in all_results.items():
-        ben_res = results['ben']
-        yorgo_res = results['yorgo']
+        if 'ben' in results and results['ben'] is not None:
+            ben_res = results['ben']
+            ben_total_success += ben_res['successful_predictions']
+            ben_total_attempts += ben_res['successful_predictions'] + ben_res['failed_predictions']
+            ben_all_distances.extend(ben_res['distances'])
+            has_ben = True
         
-        ben_total_success += ben_res['successful_predictions']
-        ben_total_attempts += ben_res['successful_predictions'] + ben_res['failed_predictions']
-        ben_all_distances.extend(ben_res['distances'])
-        
-        yorgo_total_success += yorgo_res['successful_predictions']
-        yorgo_total_attempts += yorgo_res['successful_predictions'] + yorgo_res['failed_predictions']
-        yorgo_all_distances.extend(yorgo_res['distances'])
+        if 'yorgo' in results and results['yorgo'] is not None:
+            yorgo_res = results['yorgo']
+            yorgo_total_success += yorgo_res['successful_predictions']
+            yorgo_total_attempts += yorgo_res['successful_predictions'] + yorgo_res['failed_predictions']
+            yorgo_all_distances.extend(yorgo_res['distances'])
+            has_yorgo = True
     
     print(f"\nOverall Success Rates:")
-    ben_overall_rate = (ben_total_success / ben_total_attempts * 100) if ben_total_attempts > 0 else 0
-    yorgo_overall_rate = (yorgo_total_success / yorgo_total_attempts * 100) if yorgo_total_attempts > 0 else 0
+    if has_ben:
+        ben_overall_rate = (ben_total_success / ben_total_attempts * 100) if ben_total_attempts > 0 else 0
+        print(f"  Ben: {ben_overall_rate:.1f}% ({ben_total_success}/{ben_total_attempts})")
     
-    print(f"  Ben: {ben_overall_rate:.1f}% ({ben_total_success}/{ben_total_attempts})")
-    print(f"  Yorgo: {yorgo_overall_rate:.1f}% ({yorgo_total_success}/{yorgo_total_attempts})")
+    if has_yorgo:
+        yorgo_overall_rate = (yorgo_total_success / yorgo_total_attempts * 100) if yorgo_total_attempts > 0 else 0
+        print(f"  Yorgo: {yorgo_overall_rate:.1f}% ({yorgo_total_success}/{yorgo_total_attempts})")
     
     if ben_all_distances and yorgo_all_distances:
         print(f"\nOverall Mean 3D Distance Errors:")
@@ -354,6 +378,14 @@ def print_overall_comparison(all_results):
         
         print(f"\nWINNER: {winner}'s predictor")
         print(f"Improvement: {improvement:.1f}% better average distance error")
+    elif ben_all_distances:
+        print(f"\nBen's Performance:")
+        print(f"  Mean 3D Distance Error: {np.mean(ben_all_distances):.2f} meters")
+        print(f"  Median 3D Distance Error: {np.median(ben_all_distances):.2f} meters")
+    elif yorgo_all_distances:
+        print(f"\nYorgo's Performance:")
+        print(f"  Mean 3D Distance Error: {np.mean(yorgo_all_distances):.2f} meters")
+        print(f"  Median 3D Distance Error: {np.median(yorgo_all_distances):.2f} meters")
 
 def plot_accuracy_comparison(all_results, save_plots=True):
     """
@@ -395,20 +427,21 @@ def plot_accuracy_comparison(all_results, save_plots=True):
     dataset_labels = []
     
     for dataset_name, results in all_results.items():
-        ben_res = results['ben']
-        yorgo_res = results['yorgo']
+        if 'ben' in results and results['ben'] is not None:
+            ben_res = results['ben']
+            ben_distances.extend(ben_res['distances'])
+            ben_lat_errors.extend(ben_res['lat_errors'])
+            ben_lon_errors.extend(ben_res['lon_errors'])
+            ben_alt_errors.extend(ben_res['alt_errors'])
+            # Add dataset labels for each distance measurement
+            dataset_labels.extend([dataset_name] * len(ben_res['distances']))
         
-        ben_distances.extend(ben_res['distances'])
-        yorgo_distances.extend(yorgo_res['distances'])
-        ben_lat_errors.extend(ben_res['lat_errors'])
-        yorgo_lat_errors.extend(yorgo_res['lat_errors'])
-        ben_lon_errors.extend(ben_res['lon_errors'])
-        yorgo_lon_errors.extend(yorgo_res['lon_errors'])
-        ben_alt_errors.extend(ben_res['alt_errors'])
-        yorgo_alt_errors.extend(yorgo_res['alt_errors'])
-        
-        # Add dataset labels for each distance measurement
-        dataset_labels.extend([dataset_name] * len(ben_res['distances']))
+        if 'yorgo' in results and results['yorgo'] is not None:
+            yorgo_res = results['yorgo']
+            yorgo_distances.extend(yorgo_res['distances'])
+            yorgo_lat_errors.extend(yorgo_res['lat_errors'])
+            yorgo_lon_errors.extend(yorgo_res['lon_errors'])
+            yorgo_alt_errors.extend(yorgo_res['alt_errors'])
     
     # Plot 1: Distance Error Distribution (Box Plot)
     ax1 = axes[0, 0]
@@ -441,12 +474,17 @@ def plot_accuracy_comparison(all_results, save_plots=True):
     colors = []
     
     for dataset_name, results in all_results.items():
-        ben_rate = results['ben']['success_rate']
-        yorgo_rate = results['yorgo']['success_rate']
+        if 'ben' in results and results['ben'] is not None:
+            ben_rate = results['ben']['success_rate']
+            success_rates.append(ben_rate)
+            predictor_names.append('Ben')
+            colors.append('lightblue')
         
-        success_rates.extend([ben_rate, yorgo_rate])
-        predictor_names.extend(['Ben', 'Yorgo'])
-        colors.extend(['lightblue', 'lightcoral'])
+        if 'yorgo' in results and results['yorgo'] is not None:
+            yorgo_rate = results['yorgo']['success_rate']
+            success_rates.append(yorgo_rate)
+            predictor_names.append('Yorgo')
+            colors.append('lightcoral')
     
     bars = ax3.bar(range(len(success_rates)), success_rates, color=colors)
     ax3.set_title('Success Rate Comparison')
@@ -529,27 +567,36 @@ def plot_error_trends(all_results, save_plots=True):
     fig.suptitle('Error Trends Over Flight Time', fontsize=16, fontweight='bold')
     
     for idx, (dataset_name, results) in enumerate(all_results.items()):
-        ben_res = results['ben']
-        yorgo_res = results['yorgo']
+        ben_res = results.get('ben')
+        yorgo_res = results.get('yorgo')
         
         # Plot distance errors over time
         ax1 = axes[idx, 0]
-        if ben_res['distances'] and yorgo_res['distances']:
+        has_data = False
+        
+        # Plot Ben's results if available
+        if ben_res and ben_res['distances']:
             x_ben = range(len(ben_res['distances']))
-            x_yorgo = range(len(yorgo_res['distances']))
-            
             ax1.plot(x_ben, ben_res['distances'], 'b-', alpha=0.7, label='Ben', linewidth=1)
-            ax1.plot(x_yorgo, yorgo_res['distances'], 'r-', alpha=0.7, label='Yorgo', linewidth=1)
             
-            # Add moving average
+            # Add moving average for Ben
             if len(ben_res['distances']) > 10:
                 ben_ma = np.convolve(ben_res['distances'], np.ones(10)/10, mode='valid')
                 ax1.plot(range(9, len(ben_res['distances'])), ben_ma, 'b-', linewidth=2, alpha=0.8)
+            has_data = True
+        
+        # Plot Yorgo's results if available
+        if yorgo_res and yorgo_res['distances']:
+            x_yorgo = range(len(yorgo_res['distances']))
+            ax1.plot(x_yorgo, yorgo_res['distances'], 'r-', alpha=0.7, label='Yorgo', linewidth=1)
             
+            # Add moving average for Yorgo
             if len(yorgo_res['distances']) > 10:
                 yorgo_ma = np.convolve(yorgo_res['distances'], np.ones(10)/10, mode='valid')
                 ax1.plot(range(9, len(yorgo_res['distances'])), yorgo_ma, 'r-', linewidth=2, alpha=0.8)
-            
+            has_data = True
+        
+        if has_data:
             ax1.legend()
         else:
             ax1.text(0.5, 0.5, 'No successful predictions\nto display', ha='center', va='center', transform=ax1.transAxes)
@@ -561,15 +608,23 @@ def plot_error_trends(all_results, save_plots=True):
         
         # Plot cumulative error distribution
         ax2 = axes[idx, 1]
-        if ben_res['distances'] and yorgo_res['distances']:
+        has_cumulative_data = False
+        
+        # Plot Ben's cumulative distribution if available
+        if ben_res and ben_res['distances']:
             ben_sorted = np.sort(ben_res['distances'])
-            yorgo_sorted = np.sort(yorgo_res['distances'])
-            
             ben_cumulative = np.arange(1, len(ben_sorted) + 1) / len(ben_sorted)
-            yorgo_cumulative = np.arange(1, len(yorgo_sorted) + 1) / len(yorgo_sorted)
-            
             ax2.plot(ben_sorted, ben_cumulative, 'b-', label='Ben', linewidth=2)
+            has_cumulative_data = True
+        
+        # Plot Yorgo's cumulative distribution if available
+        if yorgo_res and yorgo_res['distances']:
+            yorgo_sorted = np.sort(yorgo_res['distances'])
+            yorgo_cumulative = np.arange(1, len(yorgo_sorted) + 1) / len(yorgo_sorted)
             ax2.plot(yorgo_sorted, yorgo_cumulative, 'r-', label='Yorgo', linewidth=2)
+            has_cumulative_data = True
+        
+        if has_cumulative_data:
             ax2.legend()
         else:
             ax2.text(0.5, 0.5, 'No successful predictions\nto display', ha='center', va='center', transform=ax2.transAxes)
@@ -601,36 +656,37 @@ def create_summary_table(all_results):
     
     for dataset_name, results in all_results.items():
         for predictor_name in ['ben', 'yorgo']:
-            res = results[predictor_name]
-            
-            if res['successful_predictions'] > 0:
-                summary_data.append({
-                    'Dataset': dataset_name,
-                    'Predictor': predictor_name.capitalize(),
-                    'Success Rate (%)': f"{res['success_rate']:.1f}",
-                    'Mean Distance Error (m)': f"{res['mean_distance_error']:.2f}",
-                    'Median Distance Error (m)': f"{res['median_distance_error']:.2f}",
-                    'Std Distance Error (m)': f"{res['std_distance_error']:.2f}",
-                    'Mean Lat Error (deg)': f"{res['mean_lat_error']:.6f}",
-                    'Mean Lon Error (deg)': f"{res['mean_lon_error']:.6f}",
-                    'Mean Alt Error (m)': f"{res['mean_alt_error']:.2f}",
-                    'Successful Predictions': res['successful_predictions'],
-                    'Failed Predictions': res['failed_predictions']
-                })
-            else:
-                summary_data.append({
-                    'Dataset': dataset_name,
-                    'Predictor': predictor_name.capitalize(),
-                    'Success Rate (%)': "0.0",
-                    'Mean Distance Error (m)': "N/A",
-                    'Median Distance Error (m)': "N/A",
-                    'Std Distance Error (m)': "N/A",
-                    'Mean Lat Error (deg)': "N/A",
-                    'Mean Lon Error (deg)': "N/A",
-                    'Mean Alt Error (m)': "N/A",
-                    'Successful Predictions': 0,
-                    'Failed Predictions': res['failed_predictions']
-                })
+            if predictor_name in results and results[predictor_name] is not None:
+                res = results[predictor_name]
+                
+                if res['successful_predictions'] > 0:
+                    summary_data.append({
+                        'Dataset': dataset_name,
+                        'Predictor': predictor_name.capitalize(),
+                        'Success Rate (%)': f"{res['success_rate']:.1f}",
+                        'Mean Distance Error (m)': f"{res['mean_distance_error']:.2f}",
+                        'Median Distance Error (m)': f"{res['median_distance_error']:.2f}",
+                        'Std Distance Error (m)': f"{res['std_distance_error']:.2f}",
+                        'Mean Lat Error (deg)': f"{res['mean_lat_error']:.6f}",
+                        'Mean Lon Error (deg)': f"{res['mean_lon_error']:.6f}",
+                        'Mean Alt Error (m)': f"{res['mean_alt_error']:.2f}",
+                        'Successful Predictions': res['successful_predictions'],
+                        'Failed Predictions': res['failed_predictions']
+                    })
+                else:
+                    summary_data.append({
+                        'Dataset': dataset_name,
+                        'Predictor': predictor_name.capitalize(),
+                        'Success Rate (%)': "0.0",
+                        'Mean Distance Error (m)': "N/A",
+                        'Median Distance Error (m)': "N/A",
+                        'Std Distance Error (m)': "N/A",
+                        'Mean Lat Error (deg)': "N/A",
+                        'Mean Lon Error (deg)': "N/A",
+                        'Mean Alt Error (m)': "N/A",
+                        'Successful Predictions': 0,
+                        'Failed Predictions': res['failed_predictions']
+                    })
     
     return pd.DataFrame(summary_data)
 
@@ -638,6 +694,16 @@ def main():
     """Main function to run the benchmark"""
     print("Flight Path Predictor Benchmark")
     print("=" * 60)
+    
+    # Parse command line arguments
+    predictors = None
+    if len(sys.argv) > 1:
+        arg = sys.argv[1].lower()
+        if arg in ['ben', 'yorgo']:
+            predictors = [arg]
+            print(f"Running benchmark for {arg.capitalize()}'s predictor only")
+        else:
+            print(f"Warning: Unknown predictor '{sys.argv[1]}'. Valid options are 'ben' or 'yorgo'. Running all predictors.")
     
     # Check if plotting libraries are available
     if not MATPLOTLIB_AVAILABLE:
@@ -656,7 +722,7 @@ def main():
         n_points = 5
     
     # Run benchmark
-    results = run_benchmark(n_points)
+    results = run_benchmark(n_points, predictors=predictors)
     
     if results:
         print(f"\nBenchmark completed successfully!")
