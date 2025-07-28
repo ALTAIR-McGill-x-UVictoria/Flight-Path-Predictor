@@ -5,6 +5,19 @@ from math import radians, cos, sin, asin, sqrt
 from Ben_predictor.ben_predictor import predict_next_point as ben_predictor
 from Yorgo_predictor.yorgo_predictor import predict_next_point as yorgo_predictor
 
+# Optional imports for plotting
+try:
+    import matplotlib.pyplot as plt
+    MATPLOTLIB_AVAILABLE = True
+except ImportError:
+    MATPLOTLIB_AVAILABLE = False
+
+try:
+    import seaborn as sns
+    SEABORN_AVAILABLE = True
+except ImportError:
+    SEABORN_AVAILABLE = False
+
 def haversine_distance(lat1, lon1, lat2, lon2):
     """
     Calculate the great circle distance between two points 
@@ -209,6 +222,10 @@ def run_benchmark(n_points=5, datasets=None):
         print("Failed to load data. Exiting benchmark.")
         return None
     
+    print(f"\nNote: Both predictor functions currently return -1 (placeholder implementation).")
+    print(f"This benchmark will show 0% success rate until actual prediction algorithms are implemented.")
+    print(f"The framework is ready to test real implementations when available.\n")
+    
     datasets_dict = {
         'flight_log_2025-07-03': df1,
         'flight_log_2025-07-23': df2
@@ -242,6 +259,20 @@ def run_benchmark(n_points=5, datasets=None):
     
     # Print overall comparison
     print_overall_comparison(all_results)
+    
+    # Create visualizations if matplotlib is available
+    if MATPLOTLIB_AVAILABLE:
+        print("\nGenerating accuracy visualizations...")
+        plot_accuracy_comparison(all_results)
+        plot_error_trends(all_results)
+    else:
+        print("\nSkipping visualizations (matplotlib not available)")
+    
+    # Create and display summary table
+    summary_table = create_summary_table(all_results)
+    print("\nSummary Table:")
+    print("=" * 120)
+    print(summary_table.to_string(index=False))
     
     return all_results
 
@@ -324,10 +355,295 @@ def print_overall_comparison(all_results):
         print(f"\nWINNER: {winner}'s predictor")
         print(f"Improvement: {improvement:.1f}% better average distance error")
 
+def plot_accuracy_comparison(all_results, save_plots=True):
+    """
+    Create visualizations comparing the accuracy of both predictors
+    
+    Args:
+        all_results: Dictionary containing benchmark results
+        save_plots: Whether to save plots to files
+    """
+    if not MATPLOTLIB_AVAILABLE:
+        print("Matplotlib not available. Skipping accuracy comparison plots.")
+        return
+        
+    # Set plotting style
+    if SEABORN_AVAILABLE:
+        try:
+            plt.style.use('seaborn-v0_8')
+        except:
+            try:
+                plt.style.use('seaborn')
+            except:
+                plt.style.use('default')
+    else:
+        plt.style.use('default')
+    
+    # Set up the figure with subplots
+    fig, axes = plt.subplots(2, 3, figsize=(18, 12))
+    fig.suptitle('Flight Path Predictor Accuracy Comparison', fontsize=16, fontweight='bold')
+    
+    # Collect data for all datasets
+    ben_distances = []
+    yorgo_distances = []
+    ben_lat_errors = []
+    yorgo_lat_errors = []
+    ben_lon_errors = []
+    yorgo_lon_errors = []
+    ben_alt_errors = []
+    yorgo_alt_errors = []
+    dataset_labels = []
+    
+    for dataset_name, results in all_results.items():
+        ben_res = results['ben']
+        yorgo_res = results['yorgo']
+        
+        ben_distances.extend(ben_res['distances'])
+        yorgo_distances.extend(yorgo_res['distances'])
+        ben_lat_errors.extend(ben_res['lat_errors'])
+        yorgo_lat_errors.extend(yorgo_res['lat_errors'])
+        ben_lon_errors.extend(ben_res['lon_errors'])
+        yorgo_lon_errors.extend(yorgo_res['lon_errors'])
+        ben_alt_errors.extend(ben_res['alt_errors'])
+        yorgo_alt_errors.extend(yorgo_res['alt_errors'])
+        
+        # Add dataset labels for each distance measurement
+        dataset_labels.extend([dataset_name] * len(ben_res['distances']))
+    
+    # Plot 1: Distance Error Distribution (Box Plot)
+    ax1 = axes[0, 0]
+    if ben_distances and yorgo_distances:
+        distance_data = [ben_distances, yorgo_distances]
+        box_plot = ax1.boxplot(distance_data, tick_labels=['Ben', 'Yorgo'], patch_artist=True)
+        box_plot['boxes'][0].set_facecolor('lightblue')
+        box_plot['boxes'][1].set_facecolor('lightcoral')
+    else:
+        ax1.text(0.5, 0.5, 'No successful predictions\nto display', ha='center', va='center', transform=ax1.transAxes)
+    ax1.set_title('3D Distance Error Distribution')
+    ax1.set_ylabel('Distance Error (meters)')
+    ax1.grid(True, alpha=0.3)
+    
+    # Plot 2: Distance Error Histogram
+    ax2 = axes[0, 1]
+    if ben_distances and yorgo_distances:
+        ax2.hist(ben_distances, bins=30, alpha=0.7, label='Ben', color='lightblue', density=True)
+        ax2.hist(yorgo_distances, bins=30, alpha=0.7, label='Yorgo', color='lightcoral', density=True)
+        ax2.set_title('Distance Error Distribution')
+        ax2.set_xlabel('Distance Error (meters)')
+        ax2.set_ylabel('Density')
+        ax2.legend()
+        ax2.grid(True, alpha=0.3)
+    
+    # Plot 3: Success Rate Comparison
+    ax3 = axes[0, 2]
+    success_rates = []
+    predictor_names = []
+    colors = []
+    
+    for dataset_name, results in all_results.items():
+        ben_rate = results['ben']['success_rate']
+        yorgo_rate = results['yorgo']['success_rate']
+        
+        success_rates.extend([ben_rate, yorgo_rate])
+        predictor_names.extend(['Ben', 'Yorgo'])
+        colors.extend(['lightblue', 'lightcoral'])
+    
+    bars = ax3.bar(range(len(success_rates)), success_rates, color=colors)
+    ax3.set_title('Success Rate Comparison')
+    ax3.set_ylabel('Success Rate (%)')
+    ax3.set_xlabel('Predictor')
+    ax3.set_xticks(range(len(success_rates)))
+    ax3.set_xticklabels(predictor_names)
+    ax3.grid(True, alpha=0.3)
+    
+    # Add value labels on bars
+    for bar, rate in zip(bars, success_rates):
+        height = bar.get_height()
+        ax3.text(bar.get_x() + bar.get_width()/2., height + 0.5,
+                f'{rate:.1f}%', ha='center', va='bottom')
+    
+    # Plot 4: Latitude Error Comparison
+    ax4 = axes[1, 0]
+    if ben_lat_errors and yorgo_lat_errors:
+        lat_data = [ben_lat_errors, yorgo_lat_errors]
+        box_plot_lat = ax4.boxplot(lat_data, tick_labels=['Ben', 'Yorgo'], patch_artist=True)
+        box_plot_lat['boxes'][0].set_facecolor('lightblue')
+        box_plot_lat['boxes'][1].set_facecolor('lightcoral')
+    else:
+        ax4.text(0.5, 0.5, 'No successful predictions\nto display', ha='center', va='center', transform=ax4.transAxes)
+    ax4.set_title('Latitude Error Distribution')
+    ax4.set_ylabel('Latitude Error (degrees)')
+    ax4.grid(True, alpha=0.3)
+    
+    # Plot 5: Longitude Error Comparison
+    ax5 = axes[1, 1]
+    if ben_lon_errors and yorgo_lon_errors:
+        lon_data = [ben_lon_errors, yorgo_lon_errors]
+        box_plot_lon = ax5.boxplot(lon_data, tick_labels=['Ben', 'Yorgo'], patch_artist=True)
+        box_plot_lon['boxes'][0].set_facecolor('lightblue')
+        box_plot_lon['boxes'][1].set_facecolor('lightcoral')
+    else:
+        ax5.text(0.5, 0.5, 'No successful predictions\nto display', ha='center', va='center', transform=ax5.transAxes)
+    ax5.set_title('Longitude Error Distribution')
+    ax5.set_ylabel('Longitude Error (degrees)')
+    ax5.grid(True, alpha=0.3)
+    
+    # Plot 6: Altitude Error Comparison
+    ax6 = axes[1, 2]
+    if ben_alt_errors and yorgo_alt_errors:
+        alt_data = [ben_alt_errors, yorgo_alt_errors]
+        box_plot_alt = ax6.boxplot(alt_data, tick_labels=['Ben', 'Yorgo'], patch_artist=True)
+        box_plot_alt['boxes'][0].set_facecolor('lightblue')
+        box_plot_alt['boxes'][1].set_facecolor('lightcoral')
+    else:
+        ax6.text(0.5, 0.5, 'No successful predictions\nto display', ha='center', va='center', transform=ax6.transAxes)
+    ax6.set_title('Altitude Error Distribution')
+    ax6.set_ylabel('Altitude Error (meters)')
+    ax6.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    
+    if save_plots:
+        plt.savefig('flight_predictor_accuracy_comparison.png', dpi=300, bbox_inches='tight')
+        print(f"\nPlot saved as 'flight_predictor_accuracy_comparison.png'")
+    
+    plt.show()
+
+def plot_error_trends(all_results, save_plots=True):
+    """
+    Create plots showing error trends over time for each dataset
+    
+    Args:
+        all_results: Dictionary containing benchmark results
+        save_plots: Whether to save plots to files
+    """
+    if not MATPLOTLIB_AVAILABLE:
+        print("Matplotlib not available. Skipping error trend plots.")
+        return
+        
+    n_datasets = len(all_results)
+    fig, axes = plt.subplots(n_datasets, 2, figsize=(15, 6 * n_datasets))
+    if n_datasets == 1:
+        axes = axes.reshape(1, -1)
+    
+    fig.suptitle('Error Trends Over Flight Time', fontsize=16, fontweight='bold')
+    
+    for idx, (dataset_name, results) in enumerate(all_results.items()):
+        ben_res = results['ben']
+        yorgo_res = results['yorgo']
+        
+        # Plot distance errors over time
+        ax1 = axes[idx, 0]
+        if ben_res['distances'] and yorgo_res['distances']:
+            x_ben = range(len(ben_res['distances']))
+            x_yorgo = range(len(yorgo_res['distances']))
+            
+            ax1.plot(x_ben, ben_res['distances'], 'b-', alpha=0.7, label='Ben', linewidth=1)
+            ax1.plot(x_yorgo, yorgo_res['distances'], 'r-', alpha=0.7, label='Yorgo', linewidth=1)
+            
+            # Add moving average
+            if len(ben_res['distances']) > 10:
+                ben_ma = np.convolve(ben_res['distances'], np.ones(10)/10, mode='valid')
+                ax1.plot(range(9, len(ben_res['distances'])), ben_ma, 'b-', linewidth=2, alpha=0.8)
+            
+            if len(yorgo_res['distances']) > 10:
+                yorgo_ma = np.convolve(yorgo_res['distances'], np.ones(10)/10, mode='valid')
+                ax1.plot(range(9, len(yorgo_res['distances'])), yorgo_ma, 'r-', linewidth=2, alpha=0.8)
+            
+            ax1.legend()
+        else:
+            ax1.text(0.5, 0.5, 'No successful predictions\nto display', ha='center', va='center', transform=ax1.transAxes)
+        
+        ax1.set_title(f'Distance Errors - {dataset_name}')
+        ax1.set_xlabel('Prediction Number')
+        ax1.set_ylabel('3D Distance Error (meters)')
+        ax1.grid(True, alpha=0.3)
+        
+        # Plot cumulative error distribution
+        ax2 = axes[idx, 1]
+        if ben_res['distances'] and yorgo_res['distances']:
+            ben_sorted = np.sort(ben_res['distances'])
+            yorgo_sorted = np.sort(yorgo_res['distances'])
+            
+            ben_cumulative = np.arange(1, len(ben_sorted) + 1) / len(ben_sorted)
+            yorgo_cumulative = np.arange(1, len(yorgo_sorted) + 1) / len(yorgo_sorted)
+            
+            ax2.plot(ben_sorted, ben_cumulative, 'b-', label='Ben', linewidth=2)
+            ax2.plot(yorgo_sorted, yorgo_cumulative, 'r-', label='Yorgo', linewidth=2)
+            ax2.legend()
+        else:
+            ax2.text(0.5, 0.5, 'No successful predictions\nto display', ha='center', va='center', transform=ax2.transAxes)
+        
+        ax2.set_title(f'Cumulative Error Distribution - {dataset_name}')
+        ax2.set_xlabel('3D Distance Error (meters)')
+        ax2.set_ylabel('Cumulative Probability')
+        ax2.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    
+    if save_plots:
+        plt.savefig('flight_predictor_error_trends.png', dpi=300, bbox_inches='tight')
+        print(f"Plot saved as 'flight_predictor_error_trends.png'")
+    
+    plt.show()
+
+def create_summary_table(all_results):
+    """
+    Create a summary table of results
+    
+    Args:
+        all_results: Dictionary containing benchmark results
+    
+    Returns:
+        pandas.DataFrame: Summary table
+    """
+    summary_data = []
+    
+    for dataset_name, results in all_results.items():
+        for predictor_name in ['ben', 'yorgo']:
+            res = results[predictor_name]
+            
+            if res['successful_predictions'] > 0:
+                summary_data.append({
+                    'Dataset': dataset_name,
+                    'Predictor': predictor_name.capitalize(),
+                    'Success Rate (%)': f"{res['success_rate']:.1f}",
+                    'Mean Distance Error (m)': f"{res['mean_distance_error']:.2f}",
+                    'Median Distance Error (m)': f"{res['median_distance_error']:.2f}",
+                    'Std Distance Error (m)': f"{res['std_distance_error']:.2f}",
+                    'Mean Lat Error (deg)': f"{res['mean_lat_error']:.6f}",
+                    'Mean Lon Error (deg)': f"{res['mean_lon_error']:.6f}",
+                    'Mean Alt Error (m)': f"{res['mean_alt_error']:.2f}",
+                    'Successful Predictions': res['successful_predictions'],
+                    'Failed Predictions': res['failed_predictions']
+                })
+            else:
+                summary_data.append({
+                    'Dataset': dataset_name,
+                    'Predictor': predictor_name.capitalize(),
+                    'Success Rate (%)': "0.0",
+                    'Mean Distance Error (m)': "N/A",
+                    'Median Distance Error (m)': "N/A",
+                    'Std Distance Error (m)': "N/A",
+                    'Mean Lat Error (deg)': "N/A",
+                    'Mean Lon Error (deg)': "N/A",
+                    'Mean Alt Error (m)': "N/A",
+                    'Successful Predictions': 0,
+                    'Failed Predictions': res['failed_predictions']
+                })
+    
+    return pd.DataFrame(summary_data)
+
 def main():
     """Main function to run the benchmark"""
     print("Flight Path Predictor Benchmark")
     print("=" * 60)
+    
+    # Check if plotting libraries are available
+    if not MATPLOTLIB_AVAILABLE:
+        print("Warning: matplotlib not available. Plots will be skipped.")
+    elif not SEABORN_AVAILABLE:
+        print("Note: seaborn not available. Using basic matplotlib styling.")
     
     # Get user input for number of points
     try:
@@ -344,6 +660,8 @@ def main():
     
     if results:
         print(f"\nBenchmark completed successfully!")
+        if MATPLOTLIB_AVAILABLE:
+            print(f"Visualizations have been generated and saved.")
         print(f"Results stored in memory for further analysis if needed.")
     else:
         print("Benchmark failed to complete.")

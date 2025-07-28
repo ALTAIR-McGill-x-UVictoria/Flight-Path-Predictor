@@ -49,6 +49,7 @@ def load_csv():
 
 # write code in this function to predict next point
 def predict_next_point(df):
-    predicted_point = -1
-
-    return predicted_point
+    lat = -1
+    lon = -1
+    alt = -1
+    return lat, lon, alt
