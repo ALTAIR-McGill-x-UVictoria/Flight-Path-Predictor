@@ -151,6 +151,19 @@ def benchmark_predictor(predictor_func, predictor_name, df, n_points, key_column
             # Parse prediction based on format
             if isinstance(prediction, (list, tuple)) and len(prediction) >= 3:
                 pred_lat, pred_lon, pred_alt = prediction[0], prediction[1], prediction[2]
+                
+                # Check for error return values (-1, -1, -1)
+                if pred_lat == -1 and pred_lon == -1 and pred_alt == -1:
+                    failed_predictions += 1
+                    continue
+                    
+                # Additional validation for reasonable coordinate values
+                if (abs(pred_lat) > 90 or abs(pred_lon) > 180 or 
+                    pred_alt < -500 or pred_alt > 50000 or
+                    np.isnan(pred_lat) or np.isnan(pred_lon) or np.isnan(pred_alt)):
+                    failed_predictions += 1
+                    continue
+                    
             elif isinstance(prediction, dict):
                 pred_lat = prediction.get('lat', prediction.get('latitude', 0))
                 pred_lon = prediction.get('lon', prediction.get('longitude', 0))
@@ -165,6 +178,12 @@ def benchmark_predictor(predictor_func, predictor_name, df, n_points, key_column
             alt_error = abs(pred_alt - actual_alt)
             distance_error = calculate_3d_distance(pred_lat, pred_lon, pred_alt, 
                                                  actual_lat, actual_lon, actual_alt)
+            
+            # Final sanity check - reject predictions with impossible distances (> 100km)
+            if distance_error > 100000:  # 100km threshold for reasonable balloon movement
+                failed_predictions += 1
+                print(f"Warning: Rejected prediction with distance error {distance_error:.0f}m at index {i}")
+                continue
             
             # Store results
             results['predictions'].append([pred_lat, pred_lon, pred_alt])
@@ -182,13 +201,36 @@ def benchmark_predictor(predictor_func, predictor_name, df, n_points, key_column
             print(f"Error in prediction {i} for {predictor_name}: {e}")
             continue
     
-    # Calculate statistics
+    # Calculate statistics with outlier handling
     if results['distances']:
-        results['mean_distance_error'] = np.mean(results['distances'])
-        results['median_distance_error'] = np.median(results['distances'])
-        results['std_distance_error'] = np.std(results['distances'])
-        results['max_distance_error'] = np.max(results['distances'])
-        results['min_distance_error'] = np.min(results['distances'])
+        distances_array = np.array(results['distances'])
+        
+        # Calculate percentiles to identify outliers
+        p95 = np.percentile(distances_array, 95)
+        p99 = np.percentile(distances_array, 99)
+        
+        # Create filtered datasets for more meaningful statistics
+        valid_predictions = distances_array[distances_array < 1000]  # Under 1km (reasonable for balloon)
+        excellent_predictions = distances_array[distances_array < 100]  # Under 100m (excellent)
+        
+        results['mean_distance_error'] = np.mean(distances_array)
+        results['median_distance_error'] = np.median(distances_array)
+        results['std_distance_error'] = np.std(distances_array)
+        results['max_distance_error'] = np.max(distances_array)
+        results['min_distance_error'] = np.min(distances_array)
+        
+        # Add robust statistics
+        results['p95_distance_error'] = p95
+        results['p99_distance_error'] = p99
+        results['trimmed_mean_distance_error'] = np.mean(valid_predictions) if len(valid_predictions) > 0 else float('inf')
+        results['excellent_prediction_rate'] = len(excellent_predictions) / len(distances_array) * 100
+        results['valid_prediction_rate'] = len(valid_predictions) / len(distances_array) * 100
+        
+        # Count outliers
+        outliers_1km = np.sum(distances_array >= 1000)
+        outliers_10km = np.sum(distances_array >= 10000) 
+        results['outliers_over_1km'] = outliers_1km
+        results['outliers_over_10km'] = outliers_10km
         
         results['mean_lat_error'] = np.mean(results['lat_errors'])
         results['mean_lon_error'] = np.mean(results['lon_errors'])
@@ -307,9 +349,17 @@ def print_dataset_results(ben_results, yorgo_results, dataset_name):
         if results['successful_predictions'] > 0:
             print(f"  Mean 3D Distance Error: {results['mean_distance_error']:.2f} meters")
             print(f"  Median 3D Distance Error: {results['median_distance_error']:.2f} meters")
+            print(f"  95th Percentile Error: {results['p95_distance_error']:.2f} meters")
+            print(f"  Trimmed Mean (< 1km): {results['trimmed_mean_distance_error']:.2f} meters")
             print(f"  Std Dev Distance Error: {results['std_distance_error']:.2f} meters")
             print(f"  Max Distance Error: {results['max_distance_error']:.2f} meters")
             print(f"  Min Distance Error: {results['min_distance_error']:.2f} meters")
+            print(f"  Excellent Predictions (< 100m): {results['excellent_prediction_rate']:.1f}%")
+            print(f"  Valid Predictions (< 1km): {results['valid_prediction_rate']:.1f}%")
+            if results['outliers_over_1km'] > 0:
+                print(f"  ⚠️  Outliers > 1km: {results['outliers_over_1km']} predictions")
+            if results['outliers_over_10km'] > 0:
+                print(f"  ⚠️  Major outliers > 10km: {results['outliers_over_10km']} predictions")
             print(f"  Mean Latitude Error: {results['mean_lat_error']:.6f} degrees")
             print(f"  Mean Longitude Error: {results['mean_lon_error']:.6f} degrees")
             print(f"  Mean Altitude Error: {results['mean_alt_error']:.2f} meters")
@@ -445,21 +495,13 @@ def plot_accuracy_comparison(all_results, save_plots=True):
             yorgo_lon_errors.extend(yorgo_res['lon_errors'])
             yorgo_alt_errors.extend(yorgo_res['alt_errors'])
     
-    # Apply outlier filtering for better visualization
-    def filter_outliers(data, percentile=95):
-        """Filter outliers above the specified percentile"""
-        if not data:
-            return data
-        threshold = np.percentile(data, percentile)
-        return [x for x in data if x <= threshold]
+    # Use all data points without filtering outliers
+    ben_distances_filtered = ben_distances
+    yorgo_distances_filtered = yorgo_distances
     
-    # Filter outliers for distance plots
-    ben_distances_filtered = filter_outliers(ben_distances)
-    yorgo_distances_filtered = filter_outliers(yorgo_distances)
-    
-    # Calculate outlier counts for reporting
-    ben_outliers = len(ben_distances) - len(ben_distances_filtered)
-    yorgo_outliers = len(yorgo_distances) - len(yorgo_distances_filtered)
+    # No outliers hidden since we're showing all data
+    ben_outliers = 0
+    yorgo_outliers = 0
     
     # Plot 1: Distance Error Distribution (Box Plot)
     ax1 = axes[0, 0]
@@ -468,28 +510,14 @@ def plot_accuracy_comparison(all_results, save_plots=True):
         box_plot = ax1.boxplot(distance_data, tick_labels=['Ben', 'Yorgo'], patch_artist=True)
         box_plot['boxes'][0].set_facecolor('lightblue')
         box_plot['boxes'][1].set_facecolor('lightcoral')
-        # Add outlier information
-        total_outliers = ben_outliers + yorgo_outliers
-        if total_outliers > 0:
-            ax1.text(0.02, 0.98, f'{total_outliers} outliers hidden', 
-                    transform=ax1.transAxes, verticalalignment='top',
-                    bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
     elif ben_distances_filtered:
         # Only Ben has data
         box_plot = ax1.boxplot([ben_distances_filtered], tick_labels=['Ben'], patch_artist=True)
         box_plot['boxes'][0].set_facecolor('lightblue')
-        if ben_outliers > 0:
-            ax1.text(0.02, 0.98, f'{ben_outliers} outliers hidden', 
-                    transform=ax1.transAxes, verticalalignment='top',
-                    bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
     elif yorgo_distances_filtered:
         # Only Yorgo has data
         box_plot = ax1.boxplot([yorgo_distances_filtered], tick_labels=['Yorgo'], patch_artist=True)
         box_plot['boxes'][0].set_facecolor('lightcoral')
-        if yorgo_outliers > 0:
-            ax1.text(0.02, 0.98, f'{yorgo_outliers} outliers hidden', 
-                    transform=ax1.transAxes, verticalalignment='top',
-                    bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
     else:
         ax1.text(0.5, 0.5, 'No successful predictions\nto display', ha='center', va='center', transform=ax1.transAxes)
     ax1.set_title('3D Distance Error Distribution')
@@ -661,94 +689,59 @@ def plot_error_trends(all_results, save_plots=True):
         if yorgo_res and yorgo_res['distances']:
             all_distances.extend(yorgo_res['distances'])
         
-        # Calculate outlier threshold (95th percentile or 3 standard deviations)
+        # Calculate outlier threshold for reference but don't filter data
         if all_distances:
             q95 = np.percentile(all_distances, 95)
             mean_dist = np.mean(all_distances)
             std_dist = np.std(all_distances)
             outlier_threshold = min(q95, mean_dist + 3 * std_dist)
-            # Set a reasonable maximum threshold (e.g., 500 meters for typical flight prediction)
-            outlier_threshold = min(outlier_threshold, 500)
+            # Set a reasonable maximum threshold for y-axis scaling
+            outlier_threshold = max(outlier_threshold, 100)  # At least 100m for visibility
         else:
             outlier_threshold = 100  # Default threshold
         
         # Plot distance errors over time
         ax1 = axes[idx, 0]
         has_data = False
-        outlier_count = 0
         
-        # Plot Ben's results if available
+        # Plot Ben's results if available - show all data points
         if ben_res and ben_res['distances']:
             ben_distances = np.array(ben_res['distances'])
             x_ben = range(len(ben_distances))
             
-            # Identify outliers
-            ben_outliers = ben_distances > outlier_threshold
-            outlier_count += np.sum(ben_outliers)
+            # Plot all points without filtering
+            ax1.plot(x_ben, ben_distances, 'b-', alpha=0.7, label='Ben', linewidth=1)
             
-            # Plot normal points
-            ben_normal = ben_distances.copy()
-            ben_normal[ben_outliers] = np.nan  # Hide outliers
-            ax1.plot(x_ben, ben_normal, 'b-', alpha=0.7, label='Ben', linewidth=1)
-            
-            # Plot outliers as red dots
-            if np.any(ben_outliers):
-                ax1.scatter(np.where(ben_outliers)[0], ben_distances[ben_outliers], 
-                           color='red', marker='o', s=20, alpha=0.7, zorder=5)
-            
-            # Add moving average for Ben (excluding outliers)
+            # Add moving average for trend visibility
             if len(ben_distances) > 10:
-                ben_ma_data = ben_normal[~np.isnan(ben_normal)]
-                if len(ben_ma_data) > 10:
-                    # Create moving average with NaN handling
-                    ben_smooth = []
-                    for i in range(len(ben_distances)):
-                        window_start = max(0, i-5)
-                        window_end = min(len(ben_distances), i+6)
-                        window_data = ben_normal[window_start:window_end]
-                        window_clean = window_data[~np.isnan(window_data)]
-                        if len(window_clean) > 0:
-                            ben_smooth.append(np.mean(window_clean))
-                        else:
-                            ben_smooth.append(np.nan)
-                    ax1.plot(x_ben, ben_smooth, 'b-', linewidth=2, alpha=0.8)
+                # Create moving average
+                ben_smooth = []
+                for i in range(len(ben_distances)):
+                    window_start = max(0, i-5)
+                    window_end = min(len(ben_distances), i+6)
+                    window_data = ben_distances[window_start:window_end]
+                    ben_smooth.append(np.mean(window_data))
+                ax1.plot(x_ben, ben_smooth, 'b-', linewidth=2, alpha=0.8, label='Ben (smoothed)')
             has_data = True
         
-        # Plot Yorgo's results if available
+        # Plot Yorgo's results if available - show all data points
         if yorgo_res and yorgo_res['distances']:
             yorgo_distances = np.array(yorgo_res['distances'])
             x_yorgo = range(len(yorgo_distances))
             
-            # Identify outliers
-            yorgo_outliers = yorgo_distances > outlier_threshold
-            outlier_count += np.sum(yorgo_outliers)
+            # Plot all points without filtering
+            ax1.plot(x_yorgo, yorgo_distances, 'r-', alpha=0.7, label='Yorgo', linewidth=1)
             
-            # Plot normal points
-            yorgo_normal = yorgo_distances.copy()
-            yorgo_normal[yorgo_outliers] = np.nan  # Hide outliers
-            ax1.plot(x_yorgo, yorgo_normal, 'r-', alpha=0.7, label='Yorgo', linewidth=1)
-            
-            # Plot outliers as red dots
-            if np.any(yorgo_outliers):
-                ax1.scatter(np.where(yorgo_outliers)[0], yorgo_distances[yorgo_outliers], 
-                           color='red', marker='o', s=20, alpha=0.7, zorder=5)
-            
-            # Add moving average for Yorgo (excluding outliers)
+            # Add moving average for trend visibility
             if len(yorgo_distances) > 10:
-                yorgo_ma_data = yorgo_normal[~np.isnan(yorgo_normal)]
-                if len(yorgo_ma_data) > 10:
-                    # Create moving average with NaN handling
-                    yorgo_smooth = []
-                    for i in range(len(yorgo_distances)):
-                        window_start = max(0, i-5)
-                        window_end = min(len(yorgo_distances), i+6)
-                        window_data = yorgo_normal[window_start:window_end]
-                        window_clean = window_data[~np.isnan(window_data)]
-                        if len(window_clean) > 0:
-                            yorgo_smooth.append(np.mean(window_clean))
-                        else:
-                            yorgo_smooth.append(np.nan)
-                    ax1.plot(x_yorgo, yorgo_smooth, 'r-', linewidth=2, alpha=0.8)
+                # Create moving average
+                yorgo_smooth = []
+                for i in range(len(yorgo_distances)):
+                    window_start = max(0, i-5)
+                    window_end = min(len(yorgo_distances), i+6)
+                    window_data = yorgo_distances[window_start:window_end]
+                    yorgo_smooth.append(np.mean(window_data))
+                ax1.plot(x_yorgo, yorgo_smooth, 'r-', linewidth=2, alpha=0.8, label='Yorgo (smoothed)')
             has_data = True
         
         # Add apogee markers for original CSV flight data
@@ -796,39 +789,35 @@ def plot_error_trends(all_results, save_plots=True):
         if ben_res and ben_res.get('altitudes'):
             apogee_idx = detect_apogee(ben_res['altitudes'])
             if apogee_idx >= 0 and apogee_idx < len(ben_res['distances']):
-                # Check if the apogee point has valid distance data (not filtered as outlier)
-                if ben_res['distances'][apogee_idx] <= outlier_threshold:
-                    ax1.axvline(x=apogee_idx, color='blue', linestyle='--', alpha=0.6, linewidth=2, 
-                               label='Ben Prediction Apogee')
-                    # Add annotation
-                    y_pos = ben_res['distances'][apogee_idx] if ben_res['distances'][apogee_idx] <= outlier_threshold else outlier_threshold * 0.5
-                    ax1.annotate(f'Ben Pred.\nApogee\n({ben_res["altitudes"][apogee_idx]:.0f}m)', 
-                                xy=(apogee_idx, y_pos), xytext=(apogee_idx + len(ben_res['distances']) * 0.05, y_pos * 0.8),
-                                arrowprops=dict(arrowstyle='->', color='blue', alpha=0.6),
-                                fontsize=8, color='blue', ha='left')
+                # Show apogee marker for all valid data points
+                ax1.axvline(x=apogee_idx, color='blue', linestyle='--', alpha=0.6, linewidth=2, 
+                           label='Ben Prediction Apogee')
+                # Add annotation
+                y_pos = ben_res['distances'][apogee_idx]
+                ax1.annotate(f'Ben Pred.\nApogee\n({ben_res["altitudes"][apogee_idx]:.0f}m)', 
+                            xy=(apogee_idx, y_pos), xytext=(apogee_idx + len(ben_res['distances']) * 0.05, y_pos * 0.8),
+                            arrowprops=dict(arrowstyle='->', color='blue', alpha=0.6),
+                            fontsize=8, color='blue', ha='left')
         
         if yorgo_res and yorgo_res.get('altitudes'):
             apogee_idx = detect_apogee(yorgo_res['altitudes'])
             if apogee_idx >= 0 and apogee_idx < len(yorgo_res['distances']):
-                # Check if the apogee point has valid distance data (not filtered as outlier)
-                if yorgo_res['distances'][apogee_idx] <= outlier_threshold:
-                    ax1.axvline(x=apogee_idx, color='red', linestyle='--', alpha=0.6, linewidth=2, 
-                               label='Yorgo Prediction Apogee')
-                    # Add annotation
-                    y_pos = yorgo_res['distances'][apogee_idx] if yorgo_res['distances'][apogee_idx] <= outlier_threshold else outlier_threshold * 0.4
-                    ax1.annotate(f'Yorgo Pred.\nApogee\n({yorgo_res["altitudes"][apogee_idx]:.0f}m)', 
-                                xy=(apogee_idx, y_pos), xytext=(apogee_idx + len(yorgo_res['distances']) * 0.05, y_pos * 0.8),
-                                arrowprops=dict(arrowstyle='->', color='red', alpha=0.6),
-                                fontsize=8, color='red', ha='left')
+                # Show apogee marker for all valid data points
+                ax1.axvline(x=apogee_idx, color='red', linestyle='--', alpha=0.6, linewidth=2, 
+                           label='Yorgo Prediction Apogee')
+                # Add annotation
+                y_pos = yorgo_res['distances'][apogee_idx]
+                ax1.annotate(f'Yorgo Pred.\nApogee\n({yorgo_res["altitudes"][apogee_idx]:.0f}m)', 
+                            xy=(apogee_idx, y_pos), xytext=(apogee_idx + len(yorgo_res['distances']) * 0.05, y_pos * 0.8),
+                            arrowprops=dict(arrowstyle='->', color='red', alpha=0.6),
+                            fontsize=8, color='red', ha='left')
         
         if has_data:
             ax1.legend()
-            # Set reasonable y-axis limits
-            ax1.set_ylim(0, outlier_threshold * 1.1)
-            if outlier_count > 0:
-                ax1.text(0.02, 0.98, f'Note: {outlier_count} outliers > {outlier_threshold:.0f}m hidden', 
-                        transform=ax1.transAxes, verticalalignment='top', 
-                        bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+            # Use dynamic y-axis limits to show all data including outliers
+            if all_distances:
+                max_distance = max(all_distances)
+                ax1.set_ylim(0, max_distance * 1.1)
         else:
             ax1.text(0.5, 0.5, 'No successful predictions\nto display', ha='center', va='center', transform=ax1.transAxes)
         
